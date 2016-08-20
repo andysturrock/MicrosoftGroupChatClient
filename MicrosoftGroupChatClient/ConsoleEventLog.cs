@@ -5,12 +5,12 @@ namespace MicrosoftGroupChatClient
 {
     public class ConsoleEventLog
     {
-        public new void WriteEntry(string message)
+        public void WriteEntry(string message)
         {
             WriteEntry(message, EventLogEntryType.Information);
         }
 
-        internal void WriteEntry(string message, EventLogEntryType eventLogEntryType)
+        public void WriteEntry(string message, EventLogEntryType eventLogEntryType)
         {
             switch (eventLogEntryType)
             {
