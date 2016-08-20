@@ -1,18 +1,13 @@
 ﻿using System;
-using System.ComponentModel;
-using System.Threading;
 using System.Configuration;
 using System.Diagnostics;
-using System.Runtime.Serialization;
-using Microsoft.Win32;
+using System.Threading;
 using Newtonsoft.Json;
 
 namespace MicrosoftGroupChatClient
 {
     public class Program
     {
-        private readonly Uri _userSipUri;
-        private readonly CancellationToken _cancellationToken;
         private readonly CancellationTokenSource _cancellationTokenSource;
         private readonly GroupChat _groupChat;
         private readonly ConsoleEventLog _eventLog;
@@ -31,33 +26,36 @@ namespace MicrosoftGroupChatClient
         public Program()
         {
             _cancellationTokenSource = new CancellationTokenSource();
-            _cancellationToken = _cancellationTokenSource.Token;
+            _eventLog = new ConsoleEventLog();
 
-            //_Horrible hack to prevent parent class constructor being called.
-            // Needed because EventLog ctor checks security as only Administrator can write to event log.
-            _eventLog = (ConsoleEventLog)FormatterServices.GetUninitializedObject(typeof(ConsoleEventLog));
-            _eventLog.WriteEntry("Test");
-
-            _userSipUri = new Uri(ConfigurationManager.AppSettings["UserSipUri"]);
+            var userSipUri = new Uri(ConfigurationManager.AppSettings["UserSipUri"]);
             var ocsServer = ConfigurationManager.AppSettings["OcsServer"];
             var ocsUsername = ConfigurationManager.AppSettings["OcsUsername"];
-            var password = Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\hubot-msgc", "password", "default");
-            Console.Out.WriteLine("Type your password");
-            string ocsPassword = null;
-            while (true)
-            {
-                var key = System.Console.ReadKey(true);
-                if (key.Key == ConsoleKey.Enter)
-                    break;
-                Console.Out.Write("*");
-                ocsPassword += key.KeyChar;
-            }
-            Console.Out.WriteLine();
             var lookupServerUri = new Uri(ConfigurationManager.AppSettings["LookupServerUri"]);
             var chatRoomName = ConfigurationManager.AppSettings["ChatRoomName"];
 
-            _groupChat = new GroupChat(_eventLog, _userSipUri, ocsServer, ocsUsername, ocsPassword, lookupServerUri,
-                chatRoomName);
+            var useSso = bool.Parse(ConfigurationManager.AppSettings["UseSso"]);
+            if (!useSso)
+            {
+                Console.Out.WriteLine("Type your password");
+                string ocsPassword = null;
+                while (true)
+                {
+                    var key = Console.ReadKey(true);
+                    if (key.Key == ConsoleKey.Enter)
+                        break;
+                    Console.Out.Write("*");
+                    ocsPassword += key.KeyChar;
+                }
+                Console.Out.WriteLine();
+                _groupChat = new GroupChat(userSipUri, ocsServer, ocsUsername, ocsPassword, lookupServerUri,
+                    chatRoomName);
+            }
+            else
+            {
+                _groupChat = new GroupChat(userSipUri, ocsServer, lookupServerUri,
+                    chatRoomName);
+            }
         }
 
         public void StartUp()
@@ -65,12 +63,13 @@ namespace MicrosoftGroupChatClient
             try
             {
                 _groupChat.TextMessageReceived += GroupChatTextMessageReceived;
+                _eventLog.WriteEntry("Connecting to GroupChat....");
                 _groupChat.Connect();
                 _groupChat.Send("Connected to GroupChat.");
             }
             catch (Exception exception)
             {
-                _eventLog.WriteEntry("Exception connecting to GroupChat: " + exception.Message);
+                _eventLog.WriteEntry("Exception connecting to GroupChat: " + exception.Message, EventLogEntryType.Error);
                 throw;
             }
             _eventLog.WriteEntry("Connected to GroupChat.");
