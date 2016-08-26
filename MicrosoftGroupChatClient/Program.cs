@@ -10,7 +10,6 @@ namespace MicrosoftGroupChatClient
     {
         private readonly CancellationTokenSource _cancellationTokenSource;
         private readonly GroupChat _groupChat;
-        private readonly ConsoleEventLog _eventLog;
 
         /// <summary>
         ///     The main entry point for the application.
@@ -26,7 +25,6 @@ namespace MicrosoftGroupChatClient
         public Program()
         {
             _cancellationTokenSource = new CancellationTokenSource();
-            _eventLog = new ConsoleEventLog();
 
             var userSipUri = new Uri(ConfigurationManager.AppSettings["UserSipUri"]);
             var ocsServer = ConfigurationManager.AppSettings["OcsServer"];
@@ -62,17 +60,18 @@ namespace MicrosoftGroupChatClient
         {
             try
             {
+                _groupChat.Disconnected += Disconnected;
                 _groupChat.TextMessageReceived += GroupChatTextMessageReceived;
-                _eventLog.WriteEntry("Connecting to GroupChat....");
+                Console.Out.WriteLine("Connecting to GroupChat....");
                 _groupChat.Connect();
                 _groupChat.Send("Connected to GroupChat.");
             }
             catch (Exception exception)
             {
-                _eventLog.WriteEntry("Exception connecting to GroupChat: " + exception.Message, EventLogEntryType.Error);
+                Console.Out.WriteLine("Exception connecting to GroupChat: " + exception.Message);
                 throw;
             }
-            _eventLog.WriteEntry("Connected to GroupChat.");
+            Console.Out.WriteLine("Connected to GroupChat.");
         }
 
         public void Run()
@@ -97,20 +96,39 @@ namespace MicrosoftGroupChatClient
         {
             try
             {
+                _groupChat.Disconnected -= Disconnected;
                 _groupChat.Disconnect();
             }
             catch (Exception exception)
             {
-                _eventLog.WriteEntry("Exception disconnecting from GroupChat: " + exception.Message);
+                Console.Out.WriteLine("Exception disconnecting from GroupChat: " + exception.Message);
             }
 
             _cancellationTokenSource.Cancel();
-            _eventLog.WriteEntry("Stopped");
+            Console.Out.WriteLine("Stopped");
         }
 
         private void GroupChatTextMessageReceived(object sender, TextMessageReceivedEventArgs e)
         {
-            _eventLog.WriteEntry($"Got: {e.TextMessage.Text}");
+            Console.Out.WriteLine($"Got: {e.TextMessage.Text}");
+        }
+
+        private void Disconnected(object sender, DisconnectedEventArgs e)
+        {
+            Console.Out.WriteLine("Disconnected from GroupChat because " + e.Reason);
+            // Disconnect completely
+            try
+            {
+                _groupChat.Disconnected -= Disconnected;
+                _groupChat.Disconnect();
+            }
+            catch (Exception exception)
+            {
+                Console.Out.WriteLine("Exception while disconnecting from GC: " + exception);
+            }
+            // And reconnect
+            _groupChat.Disconnected += Disconnected;
+            _groupChat.Connect();
         }
     }
 }

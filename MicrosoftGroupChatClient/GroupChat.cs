@@ -1,9 +1,10 @@
 ﻿using System;
-using System.Diagnostics;
 using System.Net;
+using System.Timers;
 using Microsoft.Rtc.Collaboration;
 using Microsoft.Rtc.Collaboration.GroupChat;
 using Microsoft.Rtc.Signaling;
+using MicrosoftGroupChatClient;
 
 namespace MicrosoftGroupChatClient
 {
@@ -21,16 +22,17 @@ namespace MicrosoftGroupChatClient
         // Cache room session in Dictionary mapping room name to session?
         // Would also need to support event handler per room
         private readonly string _chatRoomName;
-        private bool _useSso;
+        private readonly bool _useSso;
 
-        public GroupChat(Uri userSipUri, string ocsServer, string ocsUsername, string ocsPassword, Uri lookupServerUri, string chatRoomName)
+        private readonly Timer _timer = new Timer();
+
+        public bool Connected { get; private set; }
+
+        public GroupChat(Uri userSipUri, string ocsServer, string ocsUsername, string ocsPassword, Uri lookupServerUri,
+            string chatRoomName) : this(userSipUri, ocsServer, lookupServerUri, chatRoomName)
         {
-            _userSipUri = userSipUri;
-            _ocsServer = ocsServer;
             _ocsUsername = ocsUsername;
             _ocsPassword = ocsPassword;
-            _lookupServerUri = lookupServerUri;
-            _chatRoomName = chatRoomName;
             _useSso = false;
         }
 
@@ -41,18 +43,75 @@ namespace MicrosoftGroupChatClient
             _lookupServerUri = lookupServerUri;
             _chatRoomName = chatRoomName;
             _useSso = true;
+            Connected = false;
+
+            // Spin up a thread to check the state every few seconds...
+            _timer.Elapsed += OnTimerEvent;
+            _timer.Interval = 1000;
         }
 
         public void Connect()
         {
             _userEndpoint = ConnectOfficeCommunicationServer();
+            _userEndpoint.StateChanged += StateChanged;
 
             _groupChatEndpoint = ConnectGroupChatServer();
+            _groupChatEndpoint.ConnectionStateChanged += ConnectionStateChanged;
 
             var roomSnapshot = FindChatRoom();
             _chatRoomSession = JoinChatRoom(roomSnapshot);
+            _chatRoomSession.ChatMessageReceived += ChatMessageReceived;
+            _chatRoomSession.ChatRoomSessionStateChanged += ChatRoomSessionStateChanged;
 
-            _chatRoomSession.ChatMessageReceived += SessionChatMessageReceived;
+            // Start checking session status
+            _timer.Enabled = true;
+
+            Connected = true;
+        }
+
+        // Implement a call with the right signature for events going off
+        private void OnTimerEvent(object source, ElapsedEventArgs e)
+        {
+            try
+            {
+                Console.Out.WriteLine("UserEndPoint status = " + _userEndpoint.State.ToString());
+                Console.Out.WriteLine("GroupChatEndPoint status = " + _groupChatEndpoint.State.ToString());
+                Console.Out.WriteLine("Chatroom status = " + _chatRoomSession.State.ToString());
+            }
+            catch (Exception)
+            {
+                // Ignore for now
+            }
+            if (_userEndpoint.State != LocalEndpointState.Established ||
+                _groupChatEndpoint.State != GroupChatEndpointState.Established ||
+                _chatRoomSession.State != ChatRoomSessionState.Established)
+            {
+                Disconnect("Server disconnected");
+            }
+        }
+
+        private void StateChanged(object sender, LocalEndpointStateChangedEventArgs e)
+        {
+            if (e.State == LocalEndpointState.Terminated || e.State == LocalEndpointState.Terminated)
+            {
+                Disconnect("Server disconnected");
+            }
+        }
+
+        private void ChatRoomSessionStateChanged(object sender, ChatRoomSessionStateChangedEventArgs e)
+        {
+            if (e.State == ChatRoomSessionState.Terminating || e.State == ChatRoomSessionState.Terminated)
+            {
+                Disconnect("Server disconnected");
+            }
+        }
+
+        private void ConnectionStateChanged(object sender, GroupChatEndpointStateChangedEventArgs e)
+        {
+            if (e.State == GroupChatEndpointState.Terminating || e.State == GroupChatEndpointState.Terminated)
+            {
+                Disconnect("Server disconnected");
+            }
         }
 
         public void Send(string message)
@@ -61,17 +120,58 @@ namespace MicrosoftGroupChatClient
             var formattedOutboundChatMessage = new FormattedOutboundChatMessage();
             formattedOutboundChatMessage.AppendPlainText(message);
 
-            _chatRoomSession.EndSendChatMessage(
-                _chatRoomSession.BeginSendChatMessage(formattedOutboundChatMessage, null, null));
+            try
+            {
+                _chatRoomSession.EndSendChatMessage(
+                    _chatRoomSession.BeginSendChatMessage(formattedOutboundChatMessage, null, null));
+            }
+            catch (Exception e)
+            {
+                Disconnect("Server disconnected: " + e);
+            }
         }
 
         public void Disconnect()
         {
-            _chatRoomSession.EndLeave(_chatRoomSession.BeginLeave(null, null));
-            _chatRoomSession.ChatMessageReceived -= SessionChatMessageReceived;
+            Disconnect("Client requested disconnect");
+        }
 
-            DisconnectGroupChatServer();
-            DisconnectOfficeCommunicationServer();
+        private void Disconnect(string reason)
+        {
+            // Stop checking session status
+            _timer.Enabled = false;
+            // And remove all our event listeners otherwise we'll end up back here in infinite recursion
+            _userEndpoint.StateChanged -= StateChanged;
+            _groupChatEndpoint.ConnectionStateChanged -= ConnectionStateChanged;
+            _chatRoomSession.ChatRoomSessionStateChanged -= ChatRoomSessionStateChanged;
+            _chatRoomSession.ChatMessageReceived -= ChatMessageReceived;
+            try
+            {
+                _chatRoomSession.EndLeave(_chatRoomSession.BeginLeave(null, null));
+            }
+            catch (Exception)
+            {
+                // Ignore and continue
+            }
+            try
+            {
+                DisconnectGroupChatServer();
+            }
+            catch (Exception)
+            {
+                // Ignore and continue
+            }
+            try
+            {
+                DisconnectOfficeCommunicationServer();
+            }
+            catch (Exception)
+            {
+                // Ignore and continue
+            }
+
+            Connected = false;
+            OnDisconnected(new DisconnectedEventArgs(reason));
         }
 
         public event EventHandler<TextMessageReceivedEventArgs> TextMessageReceived;
@@ -81,7 +181,14 @@ namespace MicrosoftGroupChatClient
             TextMessageReceived?.Invoke(this, e);
         }
 
-        private void SessionChatMessageReceived(object sender, ChatMessageReceivedEventArgs e)
+        public event EventHandler<DisconnectedEventArgs> Disconnected;
+
+        private void OnDisconnected(DisconnectedEventArgs e)
+        {
+            Disconnected?.Invoke(this, e);
+        }
+
+        private void ChatMessageReceived(object sender, ChatMessageReceivedEventArgs e)
         {
             var textMessage = new TextMessage("text", e.Message.MessageId, e.Message.MessageAuthor.ToString(),
                 e.Message.ChatRoomName, e.Message.MessageContent);
@@ -96,7 +203,9 @@ namespace MicrosoftGroupChatClient
             collaborationPlatform.EndStartup(collaborationPlatform.BeginStartup(null, null));
 
             var userEndpointSettings = new UserEndpointSettings(_userSipUri.ToString(), _ocsServer);
-            userEndpointSettings.Credential = _useSso ? SipCredentialCache.DefaultCredential : new NetworkCredential(_ocsUsername, _ocsPassword);
+            userEndpointSettings.Credential = _useSso
+                ? SipCredentialCache.DefaultCredential
+                : new NetworkCredential(_ocsUsername, _ocsPassword);
             var userEndpoint = new UserEndpoint(collaborationPlatform, userEndpointSettings);
 
             userEndpoint.EndEstablish(userEndpoint.BeginEstablish(null, null));
@@ -144,7 +253,7 @@ namespace MicrosoftGroupChatClient
         {
             _userEndpoint.EndTerminate(_userEndpoint.BeginTerminate(null, null));
 
-            CollaborationPlatform platform = _userEndpoint.Platform;
+            var platform = _userEndpoint.Platform;
             platform.EndShutdown(platform.BeginShutdown(null, null));
         }
     }

@@ -55,9 +55,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="ConsoleEventLog.cs">
-      <SubType>Component</SubType>
-    </Compile>
+    <Compile Include="DisconnectedEventArgs.cs" />
     <Compile Include="GroupChat.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
