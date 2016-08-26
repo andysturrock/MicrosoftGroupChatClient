@@ -119,6 +119,7 @@ namespace MicrosoftGroupChatClient
             // Disconnect completely
             try
             {
+                // Stop listening for disconnection events or we'll end up back here
                 _groupChat.Disconnected -= Disconnected;
                 _groupChat.Disconnect();
             }
@@ -126,9 +127,10 @@ namespace MicrosoftGroupChatClient
             {
                 Console.Out.WriteLine("Exception while disconnecting from GC: " + exception);
             }
-            // And reconnect
-            _groupChat.Disconnected += Disconnected;
+            // Reconnect
             _groupChat.Connect();
+            // And start listening for disconnections again
+            _groupChat.Disconnected += Disconnected;
         }
     }
 }
